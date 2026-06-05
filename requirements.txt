@@ -1,0 +1,7 @@
+flask
+twilio
+openpyxl
+requests
+pytesseract
+pillow
+gunicorn
