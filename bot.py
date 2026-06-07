@@ -4,17 +4,11 @@ import openpyxl
 import os
 import json
 import re
-import requests
-import pytesseract
-from PIL import Image
-from io import BytesIO
 from datetime import datetime
 
 app = Flask(__name__)
 EXCEL_FILE = "orders.xlsx"
 CONTACTS_FILE = "contacts.json"
-
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 def setup_excel():
     if not os.path.exists(EXCEL_FILE):
@@ -55,10 +49,8 @@ def parse_line(line):
     line = line.strip()
     if not line:
         return None
-
     line_lower = line.lower()
 
-    # Format: "item ke liye order: qty"
     if "order:" in line_lower:
         parts = line_lower.split("order:")
         item = parts[0].replace("ke liye", "").strip()
@@ -66,7 +58,6 @@ def parse_line(line):
         if item and quantity:
             return (item, quantity)
 
-    # Format: "item order qty"
     if "order" in line_lower:
         parts = line_lower.replace("order", "").strip()
         tokens = parts.split()
@@ -76,17 +67,14 @@ def parse_line(line):
             else:
                 return (" ".join(tokens[:-1]), tokens[-1])
 
-    # Format: "item: qty" or "item = qty" or "item - qty"
     match = re.match(r'^([a-zA-Z\u0900-\u097F ]+)[:\-=]+\s*(\d+)', line)
     if match:
         return (match.group(1).strip(), match.group(2).strip())
 
-    # Format: "qty item" (number pehle, no space) like "20tamatar"
     match = re.match(r'^(\d+)\s*([a-zA-Z\u0900-\u097F ]+)', line)
     if match:
-        return (match.group(2).strip(),  match.group(1).strip())
+        return (match.group(2).strip(), match.group(1).strip())
 
-    # Format: "item qty" or "itemqty" (number last, no space) like "Bengan10"
     match = re.match(r'^([a-zA-Z\u0900-\u097F ]+?)\s*(\d+)$', line)
     if match:
         return (match.group(1).strip(), match.group(2).strip())
@@ -102,39 +90,16 @@ def parse_order(message):
             orders.append(result)
     return orders
 
-def extract_text_from_image(image_url, account_sid, auth_token):
-    try:
-        response = requests.get(image_url, auth=(account_sid, auth_token))
-        img = Image.open(BytesIO(response.content))
-        text = pytesseract.image_to_string(img)
-        print(f"📷 Image se text mila: {text}")
-        return text
-    except Exception as e:
-        print(f"Image error: {e}")
-        return ""
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
     incoming_msg = request.values.get("Body", "").strip()
     sender = request.values.get("From", "").replace("whatsapp:", "")
-    media_url = request.values.get("MediaUrl0", "")
-    account_sid = request.values.get("AccountSid", "")
-    auth_token = "3Ed3yW0pPmQelT9EFyTUYAyKGyH_74NvhABHDF11Z8PFRb9Vt"
-
     print(f"📩 Message from {sender}:\n{incoming_msg}")
 
     resp = MessagingResponse()
     msg = resp.message()
 
     name = get_name(sender)
-    print(f"👤 Name found: {name}")
-
-    if media_url:
-        print(f"📷 Image mili: {media_url}")
-        extracted_text = extract_text_from_image(media_url, account_sid, auth_token)
-        if extracted_text:
-            incoming_msg = extracted_text
-
     orders = parse_order(incoming_msg)
 
     if orders:
@@ -145,10 +110,7 @@ def webhook():
         reply_lines.append("Thank you! 🙏")
         msg.body("\n".join(reply_lines))
     else:
-        if media_url:
-            msg.body("❌ Image se order detect nahi hua!\nPlease text mein order likho.")
-        else:
-            msg.body(f"❌ Format samajh nahi aaya!\nExample:\nCement 50\nSand: 100\nBrick - 200")
+        msg.body(f"❌ Format samajh nahi aaya!\nExample:\nCement 50\nSand: 100\nBrick - 200")
 
     return str(resp)
 
