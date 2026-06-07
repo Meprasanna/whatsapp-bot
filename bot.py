@@ -12,7 +12,7 @@ from io import BytesIO
 app = Flask(__name__)
 EXCEL_FILE = "orders.xlsx"
 CONTACTS_FILE = "contacts.json"
-GEMINI_API_KEY = "AQ.Ab8RN6KMfKWWalU-lG38SOl9y48ef4V9xhKZi-GDcKI_Br3S_A"
+GEMINI_API_KEY = os.environ.get("AQ.Ab8RN6KMfKWWalU-lG38SOl9y48ef4V9xhKZi-GDcKI_Br3S_A")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
@@ -192,7 +192,7 @@ def webhook():
     sender = request.values.get("From", "").replace("whatsapp:", "")
     media_url = request.values.get("MediaUrl0", "")
     account_sid = request.values.get("AccountSid", "")
-    auth_token = "3Ed3yW0pPmQelT9EFyTUYAyKGyH_74NvhABHDF11Z8PFRb9Vt"
+    auth_token = os.environ.get("3Ed3yW0pPmQelT9EFyTUYAyKGyH_74NvhABHDF11Z8PFRb9Vt")
 
     print(f"📩 Message from {sender}:\n{incoming_msg}")
 
