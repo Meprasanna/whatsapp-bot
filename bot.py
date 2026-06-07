@@ -15,7 +15,7 @@ def setup_excel():
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Orders"
-        ws.append(["Order No", "Date", "Time", "Sender Name", "Phone", "Item", "Quantity"])
+        ws.append(["Order No", "Date", "Time", "Sender Name", "Phone", "Item", "Qty (kg)", "Qty (pieces/nag)", "Qty (bundles/gaddi)"])
         wb.save(EXCEL_FILE)
 
 def load_contacts():
@@ -35,49 +35,89 @@ def get_name(phone):
             return contacts[key]
     return phone
 
-def log_order(sender_name, phone, item, quantity):
+def parse_quantity(qty_str):
+    qty_str = qty_str.strip().lower()
+    
+    kg = ""
+    pieces = ""
+    bundles = ""
+    
+    # gm/gram → kg convert
+    gm_match = re.search(r'(\d+\.?\d*)\s*(gm|gram|grm|g)\b', qty_str)
+    if gm_match:
+        grams = float(gm_match.group(1))
+        kg = round(grams / 1000, 3)
+        return str(kg), "", ""
+    
+    # kg
+    kg_match = re.search(r'(\d+\.?\d*)\s*(kg|kilo|kilogram)\b', qty_str)
+    if kg_match:
+        kg = kg_match.group(1)
+        return kg, "", ""
+    
+    # nag/nug/piece/pcs
+    nag_match = re.search(r'(\d+\.?\d*)\s*(nag|nug|piece|pcs|pc|nos|no)\b', qty_str)
+    if nag_match:
+        pieces = nag_match.group(1)
+        return "", pieces, ""
+    
+    # gaddi/bundle/gadi
+    gaddi_match = re.search(r'(\d+\.?\d*)\s*(gaddi|gadi|bundle|bunch|bundi)\b', qty_str)
+    if gaddi_match:
+        bundles = gaddi_match.group(1)
+        return "", "", bundles
+    
+    # sirf number — default kg
+    num_match = re.search(r'(\d+\.?\d*)', qty_str)
+    if num_match:
+        kg = num_match.group(1)
+        return kg, "", ""
+    
+    return "", "", ""
+
+def log_order(sender_name, phone, item, kg, pieces, bundles):
     wb = openpyxl.load_workbook(EXCEL_FILE)
     ws = wb.active
     order_no = ws.max_row
     date = datetime.now().strftime("%d-%m-%Y")
     time_now = datetime.now().strftime("%H:%M:%S")
-    ws.append([order_no, date, time_now, sender_name, phone, item, quantity])
+    ws.append([order_no, date, time_now, sender_name, phone, item, kg, pieces, bundles])
     wb.save(EXCEL_FILE)
-    print(f"✅ New Order! | {sender_name} | {item} | Qty: {quantity}")
+    print(f"✅ Order! | {sender_name} | {item} | kg:{kg} | pcs:{pieces} | bundle:{bundles}")
 
 def parse_line(line):
     line = line.strip()
     if not line:
         return None
+    
+    # Remove serial numbers like "1)", "2.", "3-"
+    line = re.sub(r'^\d+[\)\.:\-]\s*', '', line)
+    
     line_lower = line.lower()
 
+    # Format: "item ke liye order: qty"
     if "order:" in line_lower:
         parts = line_lower.split("order:")
         item = parts[0].replace("ke liye", "").strip()
-        quantity = parts[1].strip().split()[0]
+        quantity = parts[1].strip()
         if item and quantity:
             return (item, quantity)
 
-    if "order" in line_lower:
-        parts = line_lower.replace("order", "").strip()
-        tokens = parts.split()
-        if len(tokens) >= 2:
-            if tokens[0].isdigit():
-                return (" ".join(tokens[1:]), tokens[0])
-            else:
-                return (" ".join(tokens[:-1]), tokens[-1])
-
-    match = re.match(r'^([a-zA-Z\u0900-\u097F ]+)[:\-=]+\s*(\d+)', line)
+    # Format: "item - qty" or "item : qty" or "item = qty"
+    match = re.match(r'^([\w\s\u0900-\u097F]+?)\s*[\-:=]+\s*([\d\w\s\.]+)$', line)
     if match:
-        return (match.group(1).strip(), match.group(2).strip())
+        item = match.group(1).strip()
+        quantity = match.group(2).strip()
+        if item and quantity:
+            return (item, quantity)
 
-    match = re.match(r'^(\d+)\s*([a-zA-Z\u0900-\u097F ]+)', line)
+    # Format: "item qty unit" like "Tamatar 10 kg"
+    match = re.match(r'^([\w\s\u0900-\u097F]+?)\s+(\d+\.?\d*\s*(?:kg|gm|gram|nag|gaddi|bundle|pcs|pc|nos)?)\s*$', line, re.IGNORECASE)
     if match:
-        return (match.group(2).strip(), match.group(1).strip())
-
-    match = re.match(r'^([a-zA-Z\u0900-\u097F ]+?)\s*(\d+)$', line)
-    if match:
-        return (match.group(1).strip(), match.group(2).strip())
+        item = match.group(1).strip()
+        quantity = match.group(2).strip()
+        if item and quantity:
+            return (item, quantity)
 
     return None
 
@@ -89,6 +129,16 @@ def parse_order(message):
         if result:
             orders.append(result)
     return orders
+
+def format_qty_reply(kg, pieces, bundles):
+    parts = []
+    if kg:
+        parts.append(f"{kg} kg")
+    if pieces:
+        parts.append(f"{pieces} pcs")
+    if bundles:
+        parts.append(f"{bundles} bundle")
+    return " | ".join(parts) if parts else "?"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -105,17 +155,19 @@ def webhook():
     if orders:
         reply_lines = [f"✅ Orders Received! ({name})"]
         for item, quantity in orders:
-            log_order(name, sender, item, quantity)
-            reply_lines.append(f"• {item.title()} — Qty: {quantity}")
+            kg, pieces, bundles = parse_quantity(quantity)
+            log_order(name, sender, item, kg, pieces, bundles)
+            qty_display = format_qty_reply(kg, pieces, bundles)
+            reply_lines.append(f"• {item.title()} — {qty_display}")
         reply_lines.append("Thank you! 🙏")
         msg.body("\n".join(reply_lines))
     else:
-        msg.body(f"❌ Format samajh nahi aaya!\nExample:\nCement 50\nSand: 100\nBrick - 200")
+        msg.body("❌ Format samajh nahi aaya!\nExample:\nTamatar - 10kg\nDhaniya - 500gm\nLemon - 2 nag\nPudina - 1 gaddi")
 
     return str(resp)
 
 if __name__ == "__main__":
-    setup_excel()
+    setup_excel():
     print("🤖 Bot server shuru ho gaya!")
     print("🌐 Webhook: http://localhost:5000/webhook")
     app.run(debug=False, port=5000)
