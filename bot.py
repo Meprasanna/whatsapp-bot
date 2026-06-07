@@ -167,7 +167,7 @@ def webhook():
     return str(resp)
 
 if __name__ == "__main__":
-    setup_excel():
+    setup_excel()
     print("🤖 Bot server shuru ho gaya!")
     print("🌐 Webhook: http://localhost:5000/webhook")
     app.run(debug=False, port=5000)
