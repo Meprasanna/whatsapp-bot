@@ -4,11 +4,18 @@ import openpyxl
 import os
 import json
 import re
+import requests
+import google.generativeai as genai
 from datetime import datetime
+from io import BytesIO
 
 app = Flask(__name__)
 EXCEL_FILE = "orders.xlsx"
 CONTACTS_FILE = "contacts.json"
+GEMINI_API_KEY = "AQ.Ab8RN6KMfKWWalU-lG38SOl9y48ef4V9xhKZi-GDcKI_Br3S_A"
+
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 def setup_excel():
     if not os.path.exists(EXCEL_FILE):
@@ -35,43 +42,37 @@ def get_name(phone):
             return contacts[key]
     return phone
 
+def translate_item(item):
+    try:
+        prompt = f"Translate this vegetable/fruit/food item name to English. Return ONLY the English name, nothing else: '{item}'"
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except:
+        return item
+
 def parse_quantity(qty_str):
     qty_str = qty_str.strip().lower()
     
-    kg = ""
-    pieces = ""
-    bundles = ""
-    
-    # gm/gram → kg convert
     gm_match = re.search(r'(\d+\.?\d*)\s*(gm|gram|grm|g)\b', qty_str)
     if gm_match:
         grams = float(gm_match.group(1))
-        kg = round(grams / 1000, 3)
-        return str(kg), "", ""
+        return str(round(grams / 1000, 3)), "", ""
     
-    # kg
-    kg_match = re.search(r'(\d+\.?\d*)\s*(kg|kilo|kilogram)\b', qty_str)
+    kg_match = re.search(r'(\d+\.?\d*)\s*(kg|kilo)\b', qty_str)
     if kg_match:
-        kg = kg_match.group(1)
-        return kg, "", ""
+        return kg_match.group(1), "", ""
     
-    # nag/nug/piece/pcs
     nag_match = re.search(r'(\d+\.?\d*)\s*(nag|nug|piece|pcs|pc|nos|no)\b', qty_str)
     if nag_match:
-        pieces = nag_match.group(1)
-        return "", pieces, ""
+        return "", nag_match.group(1), ""
     
-    # gaddi/bundle/gadi
-    gaddi_match = re.search(r'(\d+\.?\d*)\s*(gaddi|gadi|bundle|bunch|bundi)\b', qty_str)
+    gaddi_match = re.search(r'(\d+\.?\d*)\s*(gaddi|gadi|bundle|bunch)\b', qty_str)
     if gaddi_match:
-        bundles = gaddi_match.group(1)
-        return "", "", bundles
+        return "", "", gaddi_match.group(1)
     
-    # sirf number — default kg
     num_match = re.search(r'(\d+\.?\d*)', qty_str)
     if num_match:
-        kg = num_match.group(1)
-        return kg, "", ""
+        return num_match.group(1), "", ""
     
     return "", "", ""
 
@@ -85,17 +86,70 @@ def log_order(sender_name, phone, item, kg, pieces, bundles):
     wb.save(EXCEL_FILE)
     print(f"✅ Order! | {sender_name} | {item} | kg:{kg} | pcs:{pieces} | bundle:{bundles}")
 
+def extract_orders_from_image(image_url, account_sid, auth_token):
+    try:
+        response = requests.get(image_url, auth=(account_sid, auth_token))
+        image_data = response.content
+        
+        prompt = """This image contains a list of vegetable/fruit orders written in Hindi or English or mixed.
+        Extract all items and their quantities. Convert all item names to English.
+        For each item, identify the quantity and unit (kg, gm, nag/piece, gaddi/bundle).
+        
+        Return ONLY in this exact format, one item per line:
+        ITEM_NAME | QUANTITY | UNIT
+        
+        Units should be: kg, gm, nag, gaddi
+        Example:
+        Potato | 10 | kg
+        Coriander | 500 | gm
+        Lemon | 2 | nag
+        Mint | 1 | gaddi
+        
+        Extract from the image now:"""
+        
+        image_part = {
+            "mime_type": "image/jpeg",
+            "data": image_data
+        }
+        
+        response = model.generate_content([prompt, image_part])
+        return response.text.strip()
+    except Exception as e:
+        print(f"Image error: {e}")
+        return ""
+
+def parse_gemini_image_response(text):
+    orders = []
+    lines = text.strip().split("\n")
+    for line in lines:
+        if "|" in line:
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 3:
+                item = parts[0].strip()
+                quantity = parts[1].strip()
+                unit = parts[2].strip().lower()
+                
+                if unit == "gm":
+                    kg = str(round(float(quantity) / 1000, 3))
+                    orders.append((item, kg, "", ""))
+                elif unit == "kg":
+                    orders.append((item, quantity, "", ""))
+                elif unit == "nag":
+                    orders.append((item, "", quantity, ""))
+                elif unit == "gaddi":
+                    orders.append((item, "", "", quantity))
+                else:
+                    orders.append((item, quantity, "", ""))
+    return orders
+
 def parse_line(line):
     line = line.strip()
     if not line:
         return None
-    
-    # Remove serial numbers like "1)", "2.", "3-"
     line = re.sub(r'^\d+[\)\.:\-]\s*', '', line)
-    
+
     line_lower = line.lower()
 
-    # Format: "item ke liye order: qty"
     if "order:" in line_lower:
         parts = line_lower.split("order:")
         item = parts[0].replace("ke liye", "").strip()
@@ -103,21 +157,13 @@ def parse_line(line):
         if item and quantity:
             return (item, quantity)
 
-    # Format: "item - qty" or "item : qty" or "item = qty"
     match = re.match(r'^([\w\s\u0900-\u097F]+?)\s*[\-:=]+\s*([\d\w\s\.]+)$', line)
     if match:
-        item = match.group(1).strip()
-        quantity = match.group(2).strip()
-        if item and quantity:
-            return (item, quantity)
+        return (match.group(1).strip(), match.group(2).strip())
 
-    # Format: "item qty unit" like "Tamatar 10 kg"
     match = re.match(r'^([\w\s\u0900-\u097F]+?)\s+(\d+\.?\d*\s*(?:kg|gm|gram|nag|gaddi|bundle|pcs|pc|nos)?)\s*$', line, re.IGNORECASE)
     if match:
-        item = match.group(1).strip()
-        quantity = match.group(2).strip()
-        if item and quantity:
-            return (item, quantity)
+        return (match.group(1).strip(), match.group(2).strip())
 
     return None
 
@@ -144,21 +190,49 @@ def format_qty_reply(kg, pieces, bundles):
 def webhook():
     incoming_msg = request.values.get("Body", "").strip()
     sender = request.values.get("From", "").replace("whatsapp:", "")
+    media_url = request.values.get("MediaUrl0", "")
+    account_sid = request.values.get("AccountSid", "")
+    auth_token = "3Ed3yW0pPmQelT9EFyTUYAyKGyH_74NvhABHDF11Z8PFRb9Vt"
+
     print(f"📩 Message from {sender}:\n{incoming_msg}")
 
     resp = MessagingResponse()
     msg = resp.message()
-
     name = get_name(sender)
+
+    # Image processing
+    if media_url:
+        print(f"📷 Image mili!")
+        gemini_text = extract_orders_from_image(media_url, account_sid, auth_token)
+        print(f"Gemini response: {gemini_text}")
+        
+        if gemini_text:
+            image_orders = parse_gemini_image_response(gemini_text)
+            if image_orders:
+                reply_lines = [f"📷 Image Orders Received! ({name})"]
+                for item, kg, pieces, bundles in image_orders:
+                    log_order(name, sender, item, kg, pieces, bundles)
+                    qty_display = format_qty_reply(kg, pieces, bundles)
+                    reply_lines.append(f"• {item} — {qty_display}")
+                reply_lines.append("Thank you! 🙏")
+                msg.body("\n".join(reply_lines))
+                return str(resp)
+        
+        msg.body("❌ Image se orders detect nahi hue! Please clear image bhejo.")
+        return str(resp)
+
+    # Text processing
     orders = parse_order(incoming_msg)
 
     if orders:
         reply_lines = [f"✅ Orders Received! ({name})"]
         for item, quantity in orders:
+            # Hindi to English translate
+            english_item = translate_item(item)
             kg, pieces, bundles = parse_quantity(quantity)
-            log_order(name, sender, item, kg, pieces, bundles)
+            log_order(name, sender, english_item, kg, pieces, bundles)
             qty_display = format_qty_reply(kg, pieces, bundles)
-            reply_lines.append(f"• {item.title()} — {qty_display}")
+            reply_lines.append(f"• {english_item.title()} — {qty_display}")
         reply_lines.append("Thank you! 🙏")
         msg.body("\n".join(reply_lines))
     else:
