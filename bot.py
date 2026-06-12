@@ -50,23 +50,40 @@ def translate_item(item):
         return item
 
 def parse_quantity(qty_str):
-    qty_str = qty_str.strip().lower()
-    gm_match = re.search(r'(\d+\.?\d*)\s*(gm|gram|grm|g)\b', qty_str)
+    qty_str = qty_str.strip()
+    qty_lower = qty_str.lower()
+
+    # KG units — English + Hindi
+    kg_units = r'(kg|kilo|kilogram|किलो|किलोग्राम|kgs)'
+    kg_match = re.search(r'(\d+\.?\d*)\s*' + kg_units, qty_lower)
+    if kg_match:
+        return kg_match.group(1) + " kg", "", ""
+
+    # GM units — English + Hindi → convert to kg
+    gm_units = r'(gm|gram|grm|ग्राम|ग्रा|grams)'
+    gm_match = re.search(r'(\d+\.?\d*)\s*' + gm_units, qty_lower)
     if gm_match:
         grams = float(gm_match.group(1))
-        return str(round(grams / 1000, 3)), "", ""
-    kg_match = re.search(r'(\d+\.?\d*)\s*(kg|kilo)\b', qty_str)
-    if kg_match:
-        return kg_match.group(1), "", ""
-    nag_match = re.search(r'(\d+\.?\d*)\s*(nag|nug|piece|pcs|pc|nos|no)\b', qty_str)
+        kg_val = round(grams / 1000, 3)
+        return str(kg_val) + " kg", "", ""
+
+    # NAG/PIECE units — English + Hindi
+    nag_units = r'(nag|nug|piece|pcs|pc|nos|no|नग|नगी|नग\.)'
+    nag_match = re.search(r'(\d+\.?\d*)\s*' + nag_units, qty_lower)
     if nag_match:
-        return "", nag_match.group(1), ""
-    gaddi_match = re.search(r'(\d+\.?\d*)\s*(gaddi|gadi|bundle|bunch)\b', qty_str)
+        return "", nag_match.group(1) + " pcs", ""
+
+    # GADDI/BUNDLE units — English + Hindi
+    gaddi_units = r'(gaddi|gadi|bundle|bunch|गड्डी|गड्डि|गट्टी|गड्डी)'
+    gaddi_match = re.search(r'(\d+\.?\d*)\s*' + gaddi_units, qty_lower)
     if gaddi_match:
-        return "", "", gaddi_match.group(1)
+        return "", "", gaddi_match.group(1) + " bundle"
+
+    # Sirf number — default kg
     num_match = re.search(r'(\d+\.?\d*)', qty_str)
     if num_match:
-        return num_match.group(1), "", ""
+        return num_match.group(1) + " kg", "", ""
+
     return "", "", ""
 
 def log_order(sender_name, phone, item, kg, pieces, bundles):
