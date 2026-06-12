@@ -7,12 +7,11 @@ import re
 import requests
 import google.generativeai as genai
 from datetime import datetime
-from io import BytesIO
 
 app = Flask(__name__)
 EXCEL_FILE = "orders.xlsx"
 CONTACTS_FILE = "contacts.json"
-GEMINI_API_KEY = os.environ.get("AQ.Ab8RN6KMfKWWalU-lG38SOl9y48ef4V9xhKZi-GDcKI_Br3S_A")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
@@ -52,28 +51,22 @@ def translate_item(item):
 
 def parse_quantity(qty_str):
     qty_str = qty_str.strip().lower()
-    
     gm_match = re.search(r'(\d+\.?\d*)\s*(gm|gram|grm|g)\b', qty_str)
     if gm_match:
         grams = float(gm_match.group(1))
         return str(round(grams / 1000, 3)), "", ""
-    
     kg_match = re.search(r'(\d+\.?\d*)\s*(kg|kilo)\b', qty_str)
     if kg_match:
         return kg_match.group(1), "", ""
-    
     nag_match = re.search(r'(\d+\.?\d*)\s*(nag|nug|piece|pcs|pc|nos|no)\b', qty_str)
     if nag_match:
         return "", nag_match.group(1), ""
-    
     gaddi_match = re.search(r'(\d+\.?\d*)\s*(gaddi|gadi|bundle|bunch)\b', qty_str)
     if gaddi_match:
         return "", "", gaddi_match.group(1)
-    
     num_match = re.search(r'(\d+\.?\d*)', qty_str)
     if num_match:
         return num_match.group(1), "", ""
-    
     return "", "", ""
 
 def log_order(sender_name, phone, item, kg, pieces, bundles):
@@ -90,28 +83,17 @@ def extract_orders_from_image(image_url, account_sid, auth_token):
     try:
         response = requests.get(image_url, auth=(account_sid, auth_token))
         image_data = response.content
-        
         prompt = """This image contains a list of vegetable/fruit orders written in Hindi or English or mixed.
         Extract all items and their quantities. Convert all item names to English.
-        For each item, identify the quantity and unit (kg, gm, nag/piece, gaddi/bundle).
-        
         Return ONLY in this exact format, one item per line:
         ITEM_NAME | QUANTITY | UNIT
-        
         Units should be: kg, gm, nag, gaddi
         Example:
         Potato | 10 | kg
         Coriander | 500 | gm
         Lemon | 2 | nag
-        Mint | 1 | gaddi
-        
-        Extract from the image now:"""
-        
-        image_part = {
-            "mime_type": "image/jpeg",
-            "data": image_data
-        }
-        
+        Mint | 1 | gaddi"""
+        image_part = {"mime_type": "image/jpeg", "data": image_data}
         response = model.generate_content([prompt, image_part])
         return response.text.strip()
     except Exception as e:
@@ -128,7 +110,6 @@ def parse_gemini_image_response(text):
                 item = parts[0].strip()
                 quantity = parts[1].strip()
                 unit = parts[2].strip().lower()
-                
                 if unit == "gm":
                     kg = str(round(float(quantity) / 1000, 3))
                     orders.append((item, kg, "", ""))
@@ -147,9 +128,9 @@ def parse_line(line):
     if not line:
         return None
     line = re.sub(r'^\d+[\)\.:\-]\s*', '', line)
-
     line_lower = line.lower()
 
+    # Format 1: "item ke liye order: qty"
     if "order:" in line_lower:
         parts = line_lower.split("order:")
         item = parts[0].replace("ke liye", "").strip()
@@ -157,13 +138,28 @@ def parse_line(line):
         if item and quantity:
             return (item, quantity)
 
+    # Format 2: "item - qty" or "item: qty" or "item = qty"
     match = re.match(r'^([\w\s\u0900-\u097F]+?)\s*[\-:=]+\s*([\d\w\s\.]+)$', line)
     if match:
         return (match.group(1).strip(), match.group(2).strip())
 
-    match = re.match(r'^([\w\s\u0900-\u097F]+?)\s+(\d+\.?\d*\s*(?:kg|gm|gram|nag|gaddi|bundle|pcs|pc|nos)?)\s*$', line, re.IGNORECASE)
+    # Format 3: "40 kanda" — number pehle space ke saath
+    match = re.match(r'^(\d+\.?\d*)\s+([\w\u0900-\u097F][\w\u0900-\u097F\s]*)$', line)
     if match:
-        return (match.group(1).strip(), match.group(2).strip())
+        return (match.group(2).strip(), match.group(1).strip())
+
+    # Format 4: "20tamatar" — number aur text sath mein
+    match = re.match(r'^(\d+)([\u0900-\u097Fa-zA-Z][a-zA-Z\u0900-\u097F\s]*)$', line)
+    if match:
+        return (match.group(2).strip(), match.group(1).strip())
+
+    # Format 5: "Bengan10" — text pehle number baad mein
+    match = re.match(r'^([\w\u0900-\u097F\s]+?)\s*(\d+\.?\d*\s*(?:kg|gm|gram|nag|gaddi|bundle|pcs|pc|nos)?)$', line, re.IGNORECASE)
+    if match:
+        item = match.group(1).strip()
+        qty = match.group(2).strip()
+        if item and qty:
+            return (item, qty)
 
     return None
 
@@ -192,7 +188,7 @@ def webhook():
     sender = request.values.get("From", "").replace("whatsapp:", "")
     media_url = request.values.get("MediaUrl0", "")
     account_sid = request.values.get("AccountSid", "")
-    auth_token = os.environ.get("3Ed3yW0pPmQelT9EFyTUYAyKGyH_74NvhABHDF11Z8PFRb9Vt")
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
 
     print(f"📩 Message from {sender}:\n{incoming_msg}")
 
@@ -200,12 +196,10 @@ def webhook():
     msg = resp.message()
     name = get_name(sender)
 
-    # Image processing
     if media_url:
         print(f"📷 Image mili!")
         gemini_text = extract_orders_from_image(media_url, account_sid, auth_token)
         print(f"Gemini response: {gemini_text}")
-        
         if gemini_text:
             image_orders = parse_gemini_image_response(gemini_text)
             if image_orders:
@@ -217,17 +211,13 @@ def webhook():
                 reply_lines.append("Thank you! 🙏")
                 msg.body("\n".join(reply_lines))
                 return str(resp)
-        
         msg.body("❌ Image se orders detect nahi hue! Please clear image bhejo.")
         return str(resp)
 
-    # Text processing
     orders = parse_order(incoming_msg)
-
     if orders:
         reply_lines = [f"✅ Orders Received! ({name})"]
         for item, quantity in orders:
-            # Hindi to English translate
             english_item = translate_item(item)
             kg, pieces, bundles = parse_quantity(quantity)
             log_order(name, sender, english_item, kg, pieces, bundles)
